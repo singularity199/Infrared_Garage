@@ -179,7 +179,6 @@ void Start_LCD_Show_Task(void *argument)
 }
 
 /* Private application code --------------------------------------------------*/
-/* USER CODE BEGIN Application */
 
 /* USER CODE END Application */
 
