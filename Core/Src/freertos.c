@@ -25,7 +25,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "event_groups.h"
+#include "i2c.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,7 +36,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define SLOT_1_OCCUPIED  (1 << 0)
+#define SLOT_2_OCCUPIED  (1 << 1)
+#define SLOT_3_OCCUPIED  (1 << 2)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,7 +48,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+EventGroupHandle_t ParkingStatusGroup;
 /* USER CODE END Variables */
 /* Definitions for Infrared_Detect */
 osThreadId_t Infrared_DetectHandle;
@@ -136,9 +139,39 @@ void MX_FREERTOS_Init(void) {
 void Start_Infrared_Detect_Task(void *argument)
 {
   /* USER CODE BEGIN Start_Infrared_Detect_Task */
+    uint8_t last_status = 0x00;
     /* Infinite loop */
     for (;;) {
-        osDelay(1);
+        uint8_t current_status = 0x00;
+
+        // 使用 LL 库读取 PA0, PA1, PA2 的状态
+        // 假设红外模块检测到障碍物(有车)输出低电平(0)，无障碍物输出高电平(1)
+        if (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_0) == 0) current_status |= SLOT_1_OCCUPIED;
+        if (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_1) == 0) current_status |= SLOT_2_OCCUPIED;
+        if (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_2) == 0) current_status |= SLOT_3_OCCUPIED;
+
+        // 简易防抖：延时 20ms 后再次确认状态
+        vTaskDelay(pdMS_TO_TICKS(20));
+
+        uint8_t confirm_status = 0x00;
+        if (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_0) == 0) confirm_status |= SLOT_1_OCCUPIED;
+        if (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_1) == 0) confirm_status |= SLOT_2_OCCUPIED;
+        if (LL_GPIO_IsInputPinSet(GPIOA, LL_GPIO_PIN_2) == 0) confirm_status |= SLOT_3_OCCUPIED;
+
+        // 如果两次读取状态一致，且与上次记录的状态不同，说明车位状态发生了实质性改变
+        if ((current_status == confirm_status) && (current_status != last_status)) {
+            // 更新 EventGroup
+            // 先清除相关的 3 个 bit，再设置新的状态 bit
+            xEventGroupClearBits(ParkingStatusGroup, SLOT_1_OCCUPIED | SLOT_2_OCCUPIED | SLOT_3_OCCUPIED);
+            xEventGroupSetBits(ParkingStatusGroup, current_status);
+
+            last_status = current_status; // 更新记录
+        }
+
+        // 轮询周期：50ms 扫描一次即可，既保证了实时性又释放了 CPU
+        vTaskDelay(pdMS_TO_TICKS(30));
+
+
     }
   /* USER CODE END Start_Infrared_Detect_Task */
 }
@@ -153,9 +186,31 @@ void Start_Infrared_Detect_Task(void *argument)
 void Start_LED_Show_Task(void *argument)
 {
   /* USER CODE BEGIN Start_LED_Show_Task */
+    EventBits_t status_bits;
     /* Infinite loop */
     for (;;) {
-        osDelay(1);
+        // 阻塞等待事件标志组的任意一位发生变化
+        // 参数说明：句柄,
+        //         等待的位,
+        //         退出时是否清除(否),
+        //         是否等待所有位(否),
+        //         阻塞时间(死等)
+        status_bits = xEventGroupWaitBits(ParkingStatusGroup,
+                                          SLOT_1_OCCUPIED | SLOT_2_OCCUPIED | SLOT_3_OCCUPIED,
+                                          pdFALSE,
+                                          pdFALSE,
+                                          portMAX_DELAY);
+
+        // 根据读取到的状态，使用 LL 库高速翻转 LED
+        // 假设高电平点亮红灯(有车)，低电平熄灭
+        if (status_bits & SLOT_1_OCCUPIED) LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_0);
+        else LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_0);
+
+        if (status_bits & SLOT_2_OCCUPIED) LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_1);
+        else LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_1);
+
+        if (status_bits & SLOT_3_OCCUPIED) LL_GPIO_SetOutputPin(GPIOB, LL_GPIO_PIN_2);
+        else LL_GPIO_ResetOutputPin(GPIOB, LL_GPIO_PIN_2);
 
     }
   /* USER CODE END Start_LED_Show_Task */
@@ -173,12 +228,18 @@ void Start_LCD_Show_Task(void *argument)
   /* USER CODE BEGIN Start_LCD_Show_Task */
     /* Infinite loop */
     for (;;) {
-        osDelay(1);
+        // 读取事件标志组的状态，但不阻塞等待，每 100ms 刷新一次显示
+        EventBits_t status_bits = xEventGroupGetBits(ParkingStatusGroup);
+        //每次刷新前先清屏，防止残影
+        OLED_Clear();
+        OLED_ShowChar(1,16,'SLOT1:empty');
+        osDelay(100);
     }
   /* USER CODE END Start_LCD_Show_Task */
 }
 
 /* Private application code --------------------------------------------------*/
+/* USER CODE BEGIN Application */
 
 /* USER CODE END Application */
 
